@@ -15,7 +15,7 @@ __all__ = ['compile_components']
 
 
 @memoize
-def compile_components(agg, schema, glyph):
+def compile_components(agg, schema, glyph, cuda=False):
     """Given a ``Aggregation`` object and a schema, return 5 sub-functions.
 
     Parameters
@@ -54,13 +54,13 @@ def compile_components(agg, schema, glyph):
     bases = list(unique(concat(r._bases for r in reds)))
     dshapes = [b.out_dshape(schema) for b in bases]
     # List of tuples of (append, base, input columns, temps)
-    calls = [_get_call_tuples(b, d, schema) for (b, d) in zip(bases, dshapes)]
+    calls = [_get_call_tuples(b, d, schema, cuda) for (b, d) in zip(bases, dshapes)]
     # List of unique column names needed
     cols = list(unique(concat(pluck(2, calls))))
     # List of temps needed
     temps = list(pluck(3, calls))
 
-    create = make_create(bases, dshapes)
+    create = make_create(bases, dshapes, cuda)
     info = make_info(cols)
     append = make_append(bases, cols, calls, glyph)
     combine = make_combine(bases, dshapes, temps)
@@ -79,13 +79,18 @@ def traverse_aggregation(agg):
         yield agg
 
 
-def _get_call_tuples(base, dshape, schema):
-    return base._build_append(dshape, schema), (base,), base.inputs, base._temps
+def _get_call_tuples(base, dshape, schema, cuda):
+    return base._build_append(dshape, schema, cuda), (base,), base.inputs, base._temps
 
 
-def make_create(bases, dshapes):
+def make_create(bases, dshapes, cuda):
     creators = [b._build_create(d) for (b, d) in zip(bases, dshapes)]
-    array_module = np
+    if cuda:
+        import cupy
+        array_module = cupy
+    else:
+        array_module = np
+    # array_module = np
     return lambda shape: tuple(c(shape, array_module) for c in creators)
 
 

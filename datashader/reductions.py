@@ -8,6 +8,12 @@ from toolz import concat, unique
 import xarray as xr
 
 from .utils import Expr, ngjit, isrealfloat
+from numba import cuda as nb_cuda
+
+try:
+    import cudf
+except ImportError:
+    cudf = None
 
 
 class Preprocess(Expr):
@@ -23,13 +29,24 @@ class Preprocess(Expr):
 class extract(Preprocess):
     """Extract a column from a dataframe as a numpy array of values."""
     def apply(self, df):
-        return df[self.column].values
+        if cudf and isinstance(df, cudf.DataFrame):
+            import cupy
+            if df[self.column].dtype.kind == 'f':
+                nullval = np.nan
+            else:
+                nullval = 0
+            return cupy.array(df[self.column].to_gpu_array(fillna=nullval))
+        else:
+            return df[self.column].values
 
 
 class category_codes(Preprocess):
     """Extract just the category codes from a categorical column."""
     def apply(self, df):
-        return df[self.column].cat.codes.values
+        if cudf and isinstance(df, cudf.DataFrame):
+            return df[self.column].cat.codes.to_gpu_array()
+        else:
+            return df[self.column].cat.codes.values
 
 
 class Reduction(Expr):
@@ -61,13 +78,21 @@ class Reduction(Expr):
     def _build_create(self, dshape):
         return self._create
 
-    def _build_append(self, dshape, schema):
-        if self.column is None:
-            return self._append_no_field
-        elif isrealfloat(schema[self.column]):
-            return self._append_float_field
+    def _build_append(self, dshape, schema, cuda):
+        if cuda:
+            if self.column is None:
+                return self._append_no_field_cuda
+            elif isrealfloat(schema[self.column]):
+                return self._append_float_field_cuda
+            else:
+                return self._append_int_field_cuda
         else:
-            return self._append_int_field
+            if self.column is None:
+                return self._append_no_field
+            elif isrealfloat(schema[self.column]):
+                return self._append_float_field
+            else:
+                return self._append_int_field
 
     def _build_combine(self, dshape):
         return self._combine
@@ -104,6 +129,7 @@ class count(OptionalFieldReduction):
     """
     _dshape = dshape(ct.int32)
 
+    # CPU append functions
     @staticmethod
     @ngjit
     def _append_no_field(x, y, agg):
@@ -119,6 +145,23 @@ class count(OptionalFieldReduction):
     def _append_float_field(x, y, agg, field):
         if not isnan(field):
             agg[y, x] += 1
+
+    # GPU append functions
+    @staticmethod
+    @nb_cuda.jit(device=True)
+    def _append_no_field_cuda(x, y, agg):
+        nb_cuda.atomic.add(agg, (y, x), 1)
+
+    @staticmethod
+    @nb_cuda.jit(device=True)
+    def _append_int_field_cuda(x, y, agg, field):
+        nb_cuda.atomic.add(agg, (y, x), 1)
+
+    @staticmethod
+    @nb_cuda.jit(device=True)
+    def _append_float_field_cuda(x, y, agg, field):
+        if not isnan(field):
+            nb_cuda.atomic.add(agg, (y, x), 1)
 
     @staticmethod
     def _create(shape, array_module):
@@ -143,17 +186,20 @@ class any(OptionalFieldReduction):
     @ngjit
     def _append_no_field(x, y, agg):
         agg[y, x] = True
+    _append_no_field_cuda = _append_no_field
 
     @staticmethod
     @ngjit
     def _append_int_field(x, y, agg, field):
         agg[y, x] = True
+    _append_int_field_cuda = _append_int_field
 
     @staticmethod
     @ngjit
     def _append_float_field(x, y, agg, field):
         if not isnan(field):
             agg[y, x] = True
+    _append_float_field_cuda =_append_float_field
 
     @staticmethod
     def _create(shape, array_module):
@@ -180,8 +226,6 @@ class FloatingReduction(Reduction):
 class _sum_zero(FloatingReduction):
     """Sum of all elements in ``column``.
 
-    Elements of resulting aggregate are zero if they are not updated.
-
     Parameters
     ----------
     column : str
@@ -205,13 +249,22 @@ class _sum_zero(FloatingReduction):
             agg[y, x] += field
 
     @staticmethod
+    @ngjit
+    def _append_int_field_cuda(x, y, agg, field):
+        nb_cuda.atomic.add(agg, (y, x), field)
+
+    @staticmethod
+    @ngjit
+    def _append_float_field_cuda(x, y, agg, field):
+        if not isnan(field):
+            nb_cuda.atomic.add(agg, (y, x), field)
+
+    @staticmethod
     def _combine(aggs):
         return aggs.sum(axis=0, dtype='f8')
 
 class sum(FloatingReduction):
     """Sum of all elements in ``column``.
-
-    Elements of resulting aggregate are nan if they are not updated.
 
     Parameters
     ----------
@@ -221,30 +274,15 @@ class sum(FloatingReduction):
     """
     _dshape = dshape(Option(ct.float64))
 
-    @staticmethod
-    @ngjit
-    def _append_int_field(x, y, agg, field):
-        if np.isnan(agg[y, x]):
-            agg[y, x] = field
-        else:
-            agg[y, x] += field
+    @property
+    def _bases(self):
+        return (_sum_zero(self.column), any(self.column))
 
     @staticmethod
-    @ngjit
-    def _append_float_field(x, y, agg, field):
-        if not np.isnan(field):
-            if np.isnan(agg[y, x]):
-                agg[y, x] = field
-            else:
-                agg[y, x] += field
-
-    @staticmethod
-    def _combine(aggs):
-        missing_vals = np.isnan(aggs)
-        all_empty = np.bitwise_and.reduce(missing_vals, axis=0)
-        set_to_zero = missing_vals & ~all_empty
-        return np.where(set_to_zero, 0, aggs).sum(axis=0)
-
+    def _finalize(bases, **kwargs):
+        sums, anys = bases
+        x = np.where(anys, sums, np.nan)
+        return xr.DataArray(x, **kwargs)
 
 class m2(FloatingReduction):
     """Sum of square differences from the mean of all elements in ``column``.
@@ -267,8 +305,11 @@ class m2(FloatingReduction):
     def _temps(self):
         return (_sum_zero(self.column), count(self.column))
 
-    def _build_append(self, dshape, schema):
-        return super(m2, self)._build_append(dshape, schema)
+    def _build_append(self, dshape, schema, cuda):
+        if cuda:
+            raise ValueError("""\
+The 'std' and 'var' reduction operations are not yet supported on the GPU""")
+        return super(m2, self)._build_append(dshape, schema, cuda)
 
     @staticmethod
     @ngjit
@@ -317,6 +358,12 @@ class min(FloatingReduction):
     _append_int_field = _append_float_field
 
     @staticmethod
+    @ngjit
+    def _append_float_field_cuda(x, y, agg, field):
+        nb_cuda.atomic.min(agg, (y, x), field)
+    _append_int_field_cuda = _append_float_field_cuda
+
+    @staticmethod
     def _combine(aggs):
         return np.nanmin(aggs, axis=0)
 
@@ -338,6 +385,12 @@ class max(FloatingReduction):
         elif agg[y, x] < field:
             agg[y, x] = field
     _append_int_field = _append_float_field
+
+    @staticmethod
+    @ngjit
+    def _append_float_field_cuda(x, y, agg, field):
+        nb_cuda.atomic.max(agg, (y, x), field)
+    _append_int_field_cuda = _append_float_field_cuda
 
     @staticmethod
     def _combine(aggs):
@@ -377,6 +430,12 @@ class count_cat(Reduction):
     def _append_int_field(x, y, agg, field):
         agg[y, x, field] += 1
     _append_float_field = _append_int_field
+
+    @staticmethod
+    @ngjit
+    def _append_int_field_cuda(x, y, agg, field):
+        nb_cuda.atomic.add(agg, (y, x, field), 1)
+    _append_float_field_cuda = _append_int_field_cuda
 
     @staticmethod
     def _combine(aggs):
@@ -466,20 +525,20 @@ class std(Reduction):
 class first(Reduction):
     """First value encountered in ``column``.
 
-    Useful for categorical data where an actual value must always be returned, 
+    Useful for categorical data where an actual value must always be returned,
     not an average or other numerical calculation.
-    
+
     Currently only supported for rasters, externally to this class.
 
     Parameters
     ----------
     column : str
-        Name of the column to aggregate over. If the data type is floating point, 
+        Name of the column to aggregate over. If the data type is floating point,
         ``NaN`` values in the column are skipped.
     """
     _dshape = dshape(Option(ct.float64))
 
-    @staticmethod 
+    @staticmethod
     def _append(x, y, agg):
         raise NotImplementedError("first is currently implemented only for rasters")
 
@@ -500,20 +559,20 @@ class first(Reduction):
 class last(Reduction):
     """Last value encountered in ``column``.
 
-    Useful for categorical data where an actual value must always be returned, 
+    Useful for categorical data where an actual value must always be returned,
     not an average or other numerical calculation.
-    
+
     Currently only supported for rasters, externally to this class.
 
     Parameters
     ----------
     column : str
-        Name of the column to aggregate over. If the data type is floating point, 
+        Name of the column to aggregate over. If the data type is floating point,
         ``NaN`` values in the column are skipped.
     """
     _dshape = dshape(Option(ct.float64))
 
-    @staticmethod 
+    @staticmethod
     def _append(x, y, agg):
         raise NotImplementedError("last is currently implemented only for rasters")
 
@@ -534,9 +593,9 @@ class last(Reduction):
 class mode(Reduction):
     """Mode (most common value) of all the values encountered in ``column``.
 
-    Useful for categorical data where an actual value must always be returned, 
+    Useful for categorical data where an actual value must always be returned,
     not an average or other numerical calculation.
-    
+
     Currently only supported for rasters, externally to this class.
     Implementing it for other glyph types would be difficult due to potentially
     unbounded data storage requirements to store indefinite point or line
@@ -545,12 +604,12 @@ class mode(Reduction):
     Parameters
     ----------
     column : str
-        Name of the column to aggregate over. If the data type is floating point, 
+        Name of the column to aggregate over. If the data type is floating point,
         ``NaN`` values in the column are skipped.
     """
     _dshape = dshape(Option(ct.float64))
 
-    @staticmethod 
+    @staticmethod
     def _append(x, y, agg):
         raise NotImplementedError("mode is currently implemented only for rasters")
 
@@ -608,4 +667,4 @@ __all__ = list(set([_k for _k,_v in locals().items()
                     if isinstance(_v,type) and (issubclass(_v,Reduction) or _v is summary)
                     and _v not in [Reduction, OptionalFieldReduction,
                                    FloatingReduction, m2]]))
-    
+
