@@ -7,6 +7,14 @@ from datashader.glyphs.glyph import Glyph
 from datashader.glyphs.line import _build_map_onto_pixel_for_line, _clipt
 from datashader.glyphs.points import _PointLike
 from datashader.utils import isreal, ngjit
+from numba import cuda
+
+try:
+    import cudf
+    from ..transfer_functions._cuda_utils import cuda_args
+except ImportError:
+    cudf = None
+    cuda_args = None
 
 
 class _AreaToLineLike(Glyph):
@@ -95,7 +103,7 @@ class AreaToZeroAxis0(_PointLike):
             append, expand_aggs_and_cols
         )
         map_onto_pixel = _build_map_onto_pixel_for_line(x_mapper, y_mapper)
-        perform_extend_cpu = _build_extend_area_to_zero_axis0(
+        extend_cpu = _build_extend_area_to_zero_axis0(
             draw_trapezoid_y, map_onto_pixel, expand_aggs_and_cols
         )
         x_name = self.x
@@ -108,7 +116,7 @@ class AreaToZeroAxis0(_PointLike):
             xs = df[x_name].values
             ys = df[y_name].values
             aggs_and_cols = aggs + info(df)
-            perform_extend_cpu(
+            extend_cpu(
                 sx, tx, sy, ty,
                 xmin, xmax, ymin, ymax,
                 xs, ys, plot_start, *aggs_and_cols
@@ -169,7 +177,7 @@ class AreaToLineAxis0(_AreaToLineLike):
         expand_aggs_and_cols = self.expand_aggs_and_cols(append)
         draw_trapezoid_y = _build_draw_trapezoid_y(append, expand_aggs_and_cols)
         map_onto_pixel = _build_map_onto_pixel_for_line(x_mapper, y_mapper)
-        perform_extend_cpu = _build_extend_area_to_line_axis0(
+        extend_cpu = _build_extend_area_to_line_axis0(
             draw_trapezoid_y, map_onto_pixel, expand_aggs_and_cols
         )
         x_name = self.x
@@ -184,7 +192,7 @@ class AreaToLineAxis0(_AreaToLineLike):
             ys_stacks = df[y_stack_name].values
 
             aggs_and_cols = aggs + info(df)
-            perform_extend_cpu(
+            extend_cpu(
                 sx, tx, sy, ty,
                 xmin, xmax, ymin, ymax,
                 xs, ys, ys_stacks, plot_start, *aggs_and_cols
@@ -252,7 +260,7 @@ class AreaToZeroAxis0Multi(_PointLike):
         expand_aggs_and_cols = self.expand_aggs_and_cols(append)
         draw_trapezoid_y = _build_draw_trapezoid_y(append, expand_aggs_and_cols)
         map_onto_pixel = _build_map_onto_pixel_for_line(x_mapper, y_mapper)
-        perform_extend_cpu = _build_extend_area_to_zero_axis0_multi(
+        extend_cpu = _build_extend_area_to_zero_axis0_multi(
             draw_trapezoid_y, map_onto_pixel, expand_aggs_and_cols
         )
         x_names = self.x
@@ -264,7 +272,7 @@ class AreaToZeroAxis0Multi(_PointLike):
             xs = tuple(df[x_name].values for x_name in x_names)
             ys = tuple(df[y_name].values for y_name in y_names)
             aggs_and_cols = aggs + info(df)
-            perform_extend_cpu(
+            extend_cpu(
                 sx, tx, sy, ty,
                 xmin, xmax, ymin, ymax,
                 xs, ys, plot_start, *aggs_and_cols
@@ -333,7 +341,7 @@ class AreaToLineAxis0Multi(_AreaToLineLike):
         expand_aggs_and_cols = self.expand_aggs_and_cols(append)
         draw_trapezoid_y = _build_draw_trapezoid_y(append, expand_aggs_and_cols)
         map_onto_pixel = _build_map_onto_pixel_for_line(x_mapper, y_mapper)
-        perform_extend_cpu = _build_extend_area_to_line_axis0_multi(
+        extend_cpu = _build_extend_area_to_line_axis0_multi(
             draw_trapezoid_y, map_onto_pixel, expand_aggs_and_cols
         )
         x_names = self.x
@@ -349,7 +357,7 @@ class AreaToLineAxis0Multi(_AreaToLineLike):
                              for y_stack_name in y_stack_names)
 
             aggs_and_cols = aggs + info(df)
-            perform_extend_cpu(
+            extend_cpu(
                 sx, tx, sy, ty,
                 xmin, xmax, ymin, ymax,
                 xs, ys, y_stacks, plot_start, *aggs_and_cols
@@ -432,7 +440,7 @@ class AreaToZeroAxis1(_PointLike):
         expand_aggs_and_cols = self.expand_aggs_and_cols(append)
         draw_trapezoid_y = _build_draw_trapezoid_y(append, expand_aggs_and_cols)
         map_onto_pixel = _build_map_onto_pixel_for_line(x_mapper, y_mapper)
-        perform_extend_cpu = _build_extend_area_to_zero_axis1_none_constant(
+        extend_cpu, extend_cuda = _build_extend_area_to_zero_axis1_none_constant(
             draw_trapezoid_y, map_onto_pixel, expand_aggs_and_cols
         )
 
@@ -444,10 +452,16 @@ class AreaToZeroAxis1(_PointLike):
             xmin, xmax, ymin, ymax = bounds
             aggs_and_cols = aggs + info(df)
 
-            xs = df[list(x_names)].values
-            ys = df[list(y_names)].values
+            if cudf and isinstance(df, cudf.DataFrame):
+                xs = df[list(x_names)].as_gpu_matrix()
+                ys = df[list(y_names)].as_gpu_matrix()
+                do_extend = extend_cuda[cuda_args(xs.shape[0])]
+            else:
+                xs = df[list(x_names)].values
+                ys = df[list(y_names)].values
+                do_extend = extend_cpu
 
-            perform_extend_cpu(
+            do_extend(
                 sx, tx, sy, ty, xmin, xmax, ymin, ymax, xs, ys, *aggs_and_cols
             )
 
@@ -531,7 +545,7 @@ class AreaToLineAxis1(_AreaToLineLike):
         expand_aggs_and_cols = self.expand_aggs_and_cols(append)
         draw_trapezoid_y = _build_draw_trapezoid_y(append, expand_aggs_and_cols)
         map_onto_pixel = _build_map_onto_pixel_for_line(x_mapper, y_mapper)
-        perform_extend_cpu = _build_extend_area_to_line_axis1_none_constant(
+        extend_cpu, extend_cuda = _build_extend_area_to_line_axis1_none_constant(
             draw_trapezoid_y, map_onto_pixel, expand_aggs_and_cols
         )
         x_names = self.x
@@ -543,11 +557,18 @@ class AreaToLineAxis1(_AreaToLineLike):
             xmin, xmax, ymin, ymax = bounds
             aggs_and_cols = aggs + info(df)
 
-            xs = df[list(x_names)].values
-            ys = df[list(y_names)].values
-            y_stacks = df[list(y_stack_names)].values
+            if cudf and isinstance(df, cudf.DataFrame):
+                xs = df[list(x_names)].as_gpu_matrix()
+                ys = df[list(y_names)].as_gpu_matrix()
+                y_stacks = df[list(y_stack_names)].as_gpu_matrix()
+                do_extend = extend_cuda[cuda_args(xs.shape[0])]
+            else:
+                xs = df[list(x_names)].values
+                ys = df[list(y_names)].values
+                y_stacks = df[list(y_stack_names)].values
+                do_extend = extend_cpu
 
-            perform_extend_cpu(
+            do_extend(
                 sx, tx, sy, ty, xmin, xmax, ymin, ymax,
                 xs, ys, y_stacks, *aggs_and_cols
             )
@@ -591,7 +612,7 @@ class AreaToZeroAxis1XConstant(AreaToZeroAxis1):
         expand_aggs_and_cols = self.expand_aggs_and_cols(append)
         draw_trapezoid_y = _build_draw_trapezoid_y(append, expand_aggs_and_cols)
         map_onto_pixel = _build_map_onto_pixel_for_line(x_mapper, y_mapper)
-        perform_extend_cpu = _build_extend_area_to_zero_axis1_x_constant(
+        extend_cpu, extend_cuda = _build_extend_area_to_zero_axis1_x_constant(
             draw_trapezoid_y, map_onto_pixel, expand_aggs_and_cols
         )
 
@@ -603,9 +624,14 @@ class AreaToZeroAxis1XConstant(AreaToZeroAxis1):
             xmin, xmax, ymin, ymax = bounds
             aggs_and_cols = aggs + info(df)
 
-            ys = df[list(y_names)].values
+            if cudf and isinstance(df, cudf.DataFrame):
+                ys = df[list(y_names)].as_gpu_matrix()
+                do_extend = extend_cuda[cuda_args(ys.shape[0])]
+            else:
+                ys = df[list(y_names)].values
+                do_extend = extend_cpu
 
-            perform_extend_cpu(
+            do_extend(
                 sx, tx, sy, ty,
                 xmin, xmax, ymin, ymax,
                 x_values, ys, *aggs_and_cols
@@ -663,7 +689,7 @@ class AreaToLineAxis1XConstant(AreaToLineAxis1):
         expand_aggs_and_cols = self.expand_aggs_and_cols(append)
         draw_trapezoid_y = _build_draw_trapezoid_y(append, expand_aggs_and_cols)
         map_onto_pixel = _build_map_onto_pixel_for_line(x_mapper, y_mapper)
-        perform_extend_cpu = _build_extend_area_to_line_axis1_x_constant(
+        extend_cpu, extend_cuda = _build_extend_area_to_line_axis1_x_constant(
             draw_trapezoid_y, map_onto_pixel, expand_aggs_and_cols
         )
 
@@ -676,10 +702,16 @@ class AreaToLineAxis1XConstant(AreaToLineAxis1):
             xmin, xmax, ymin, ymax = bounds
             aggs_and_cols = aggs + info(df)
 
-            ys = df[list(y_names)].values
-            y_stacks = df[list(y_stack_names)].values
+            if cudf and isinstance(df, cudf.DataFrame):
+                ys = df[list(y_names)].as_gpu_matrix()
+                y_stacks = df[list(y_stack_names)].as_gpu_matrix()
+                do_extend = extend_cuda[cuda_args(ys.shape[0])]
+            else:
+                ys = df[list(y_names)].values
+                y_stacks = df[list(y_stack_names)].values
+                do_extend = extend_cpu
 
-            perform_extend_cpu(
+            do_extend(
                 sx, tx, sy, ty,
                 xmin, xmax, ymin, ymax,
                 x_values, ys, y_stacks, *aggs_and_cols
@@ -724,7 +756,7 @@ class AreaToZeroAxis1YConstant(AreaToZeroAxis1):
         expand_aggs_and_cols = self.expand_aggs_and_cols(append)
         draw_trapezoid_y = _build_draw_trapezoid_y(append, expand_aggs_and_cols)
         map_onto_pixel = _build_map_onto_pixel_for_line(x_mapper, y_mapper)
-        perform_extend_cpu = _build_extend_area_to_zero_axis1_y_constant(
+        extend_cpu, extend_cuda = _build_extend_area_to_zero_axis1_y_constant(
             draw_trapezoid_y, map_onto_pixel, expand_aggs_and_cols
         )
 
@@ -736,9 +768,14 @@ class AreaToZeroAxis1YConstant(AreaToZeroAxis1):
             xmin, xmax, ymin, ymax = bounds
             aggs_and_cols = aggs + info(df)
 
-            xs = df[list(x_names)].values
+            if cudf and isinstance(df, cudf.DataFrame):
+                xs = df[list(x_names)].as_gpu_matrix()
+                do_extend = extend_cuda[cuda_args(xs.shape[0])]
+            else:
+                xs = df[list(x_names)].values
+                do_extend = extend_cpu
 
-            perform_extend_cpu(
+            do_extend(
                 sx, tx, sy, ty,
                 xmin, xmax, ymin, ymax,
                 xs, y_values, *aggs_and_cols
@@ -783,7 +820,7 @@ class AreaToLineAxis1YConstant(AreaToLineAxis1):
         expand_aggs_and_cols = self.expand_aggs_and_cols(append)
         draw_trapezoid_y = _build_draw_trapezoid_y(append, expand_aggs_and_cols)
         map_onto_pixel = _build_map_onto_pixel_for_line(x_mapper, y_mapper)
-        perform_extend_cpu = _build_extend_area_to_line_axis1_y_constant(
+        extend_cpu, extend_cuda = _build_extend_area_to_line_axis1_y_constant(
             draw_trapezoid_y, map_onto_pixel, expand_aggs_and_cols
         )
         x_names = self.x
@@ -795,9 +832,14 @@ class AreaToLineAxis1YConstant(AreaToLineAxis1):
             xmin, xmax, ymin, ymax = bounds
             aggs_and_cols = aggs + info(df)
 
-            xs = df[list(x_names)].values
+            if cudf and isinstance(df, cudf.DataFrame):
+                xs = df[list(x_names)].as_gpu_matrix()
+                do_extend = extend_cuda[cuda_args(xs.shape[0])]
+            else:
+                xs = df[list(x_names)].values
+                do_extend = extend_cpu
 
-            perform_extend_cpu(
+            do_extend(
                 sx, tx, sy, ty,
                 xmin, xmax, ymin, ymax,
                 xs, y_values, y_stack_values, *aggs_and_cols
@@ -857,7 +899,7 @@ class AreaToZeroAxis1Ragged(_PointLike):
         expand_aggs_and_cols = self.expand_aggs_and_cols(append)
         draw_trapezoid_y = _build_draw_trapezoid_y(append, expand_aggs_and_cols)
         map_onto_pixel = _build_map_onto_pixel_for_line(x_mapper, y_mapper)
-        perform_extend_cpu = _build_extend_area_to_zero_axis1_ragged(
+        extend_cpu = _build_extend_area_to_zero_axis1_ragged(
             draw_trapezoid_y, map_onto_pixel, expand_aggs_and_cols
         )
         x_name = self.x
@@ -870,7 +912,7 @@ class AreaToZeroAxis1Ragged(_PointLike):
             xs = df[x_name].values
             ys = df[y_name].values
             aggs_and_cols = aggs + info(df)
-            perform_extend_cpu(
+            extend_cpu(
                 sx, tx, sy, ty,
                 xmin, xmax, ymin, ymax,
                 xs, ys, *aggs_and_cols
@@ -935,7 +977,7 @@ class AreaToLineAxis1Ragged(_AreaToLineLike):
         expand_aggs_and_cols = self.expand_aggs_and_cols(append)
         draw_trapezoid_y = _build_draw_trapezoid_y(append, expand_aggs_and_cols)
         map_onto_pixel = _build_map_onto_pixel_for_line(x_mapper, y_mapper)
-        perform_extend_cpu = _build_extend_area_to_line_axis1_ragged(
+        extend_cpu = _build_extend_area_to_line_axis1_ragged(
             draw_trapezoid_y, map_onto_pixel, expand_aggs_and_cols
         )
         x_name = self.x
@@ -951,7 +993,7 @@ class AreaToLineAxis1Ragged(_AreaToLineLike):
             y_stacks = df[y_stack_name].values
 
             aggs_and_cols = aggs + info(df)
-            perform_extend_cpu(
+            extend_cpu(
                 sx, tx, sy, ty,
                 xmin, xmax, ymin, ymax,
                 xs, ys, y_stacks, *aggs_and_cols
@@ -1245,7 +1287,7 @@ def _build_extend_area_to_zero_axis0(
 ):
     @ngjit
     @expand_aggs_and_cols
-    def extend_area(
+    def extend_cpu(
             sx, tx, sy, ty, xmin, xmax, ymin, ymax,
             xs, ys, plot_start, *aggs_and_cols
     ):
@@ -1291,7 +1333,7 @@ def _build_extend_area_to_zero_axis0(
                 plot_start = False
             i += 1
 
-    return extend_area
+    return extend_cpu
 
 
 def _build_extend_area_to_line_axis0(
@@ -1299,7 +1341,7 @@ def _build_extend_area_to_line_axis0(
 ):
     @ngjit
     @expand_aggs_and_cols
-    def extend_area(
+    def extend_cpu(
             sx, tx, sy, ty, xmin, xmax, ymin, ymax,
             xs, ys0, ys1, plot_start, *aggs_and_cols
     ):
@@ -1346,7 +1388,7 @@ def _build_extend_area_to_line_axis0(
                 plot_start = False
             i += 1
 
-    return extend_area
+    return extend_cpu
 
 
 def _build_extend_area_to_zero_axis0_multi(
@@ -1354,7 +1396,7 @@ def _build_extend_area_to_zero_axis0_multi(
 ):
     @ngjit
     @expand_aggs_and_cols
-    def extend_area(
+    def extend_cpu(
             sx, tx, sy, ty, xmin, xmax, ymin, ymax,
             xs, ys, plot_start, *aggs_and_cols
     ):
@@ -1405,7 +1447,7 @@ def _build_extend_area_to_zero_axis0_multi(
                 i += 1
             j += 1
 
-    return extend_area
+    return extend_cpu
 
 
 def _build_extend_area_to_line_axis0_multi(
@@ -1413,7 +1455,7 @@ def _build_extend_area_to_line_axis0_multi(
 ):
     @ngjit
     @expand_aggs_and_cols
-    def extend_area(
+    def extend_cpu(
             sx, tx, sy, ty, xmin, xmax, ymin, ymax,
             xs, ys0, ys1, plot_start, *aggs_and_cols
     ):
@@ -1467,7 +1509,7 @@ def _build_extend_area_to_line_axis0_multi(
                 i += 1
             j += 1
 
-    return extend_area
+    return extend_cpu
 
 
 def _build_extend_area_to_zero_axis1_none_constant(
@@ -1514,6 +1556,21 @@ def _build_extend_area_to_zero_axis1_none_constant(
                 plot_start = False
             j += 1
 
+    @cuda.jit
+    @expand_aggs_and_cols
+    def extend_cuda(
+            sx, tx, sy, ty, xmin, xmax, ymin, ymax, xs, ys, *aggs_and_cols
+    ):
+        xmaxi, ymaxi = map_onto_pixel(
+            sx, tx, sy, ty, xmin, xmax, ymin, ymax, xmax, ymax
+        )
+        i = cuda.grid(1)
+        if i < xs.shape[0]:
+            _perform_extend_area(
+                i, sx, tx, sy, ty, xmin, xmax, ymin, ymax,
+                xmaxi, ymaxi, xs, ys, *aggs_and_cols
+            )
+
     @ngjit
     @expand_aggs_and_cols
     def extend_cpu(
@@ -1528,7 +1585,7 @@ def _build_extend_area_to_zero_axis1_none_constant(
                 xmaxi, ymaxi, xs, ys, *aggs_and_cols
             )
 
-    return extend_cpu
+    return extend_cpu, extend_cuda
 
 
 def _build_extend_area_to_line_axis1_none_constant(
@@ -1577,6 +1634,22 @@ def _build_extend_area_to_line_axis1_none_constant(
                 plot_start = False
             j += 1
 
+    @cuda.jit
+    @expand_aggs_and_cols
+    def extend_cuda(
+            sx, tx, sy, ty, xmin, xmax, ymin, ymax,
+            xs, ys0, ys1, *aggs_and_cols
+    ):
+        xmaxi, ymaxi = map_onto_pixel(
+            sx, tx, sy, ty, xmin, xmax, ymin, ymax, xmax, ymax
+        )
+        i = cuda.grid(1)
+        if i < xs.shape[0]:
+            _perform_extend_area(
+                i, sx, tx, sy, ty, xmin, xmax, ymin, ymax,
+                xmaxi, ymaxi, xs, ys0, ys1, *aggs_and_cols
+            )
+
     @ngjit
     @expand_aggs_and_cols
     def extend_cpu(
@@ -1595,7 +1668,7 @@ def _build_extend_area_to_line_axis1_none_constant(
                 xmaxi, ymaxi, xs, ys0, ys1, *aggs_and_cols
             )
 
-    return extend_cpu
+    return extend_cpu, extend_cuda
 
 
 def _build_extend_area_to_zero_axis1_x_constant(
@@ -1640,6 +1713,22 @@ def _build_extend_area_to_zero_axis1_x_constant(
                 plot_start = False
             j += 1
 
+    @cuda.jit
+    @expand_aggs_and_cols
+    def extend_cuda(
+            sx, tx, sy, ty, xmin, xmax, ymin, ymax, xs, ys, *aggs_and_cols
+    ):
+        xmaxi, ymaxi = map_onto_pixel(
+            sx, tx, sy, ty, xmin, xmax, ymin, ymax, xmax, ymax
+        )
+
+        i = cuda.grid(1)
+        if i < ys.shape[0]:
+            _perform_extend_area(
+                i, sx, tx, sy, ty, xmin, xmax, ymin, ymax,
+                xmaxi, ymaxi, xs, ys, *aggs_and_cols
+            )
+
     @ngjit
     @expand_aggs_and_cols
     def extend_cpu(
@@ -1655,7 +1744,7 @@ def _build_extend_area_to_zero_axis1_x_constant(
                 xmaxi, ymaxi, xs, ys, *aggs_and_cols
             )
 
-    return extend_cpu
+    return extend_cpu, extend_cuda
 
 
 def _build_extend_area_to_line_axis1_x_constant(
@@ -1704,6 +1793,23 @@ def _build_extend_area_to_line_axis1_x_constant(
                 plot_start = False
             j += 1
 
+    @cuda.jit
+    @expand_aggs_and_cols
+    def extend_cuda(
+            sx, tx, sy, ty, xmin, xmax, ymin, ymax,
+            xs, ys0, ys1, *aggs_and_cols
+    ):
+        xmaxi, ymaxi = map_onto_pixel(
+            sx, tx, sy, ty, xmin, xmax, ymin, ymax, xmax, ymax
+        )
+
+        i = cuda.grid(1)
+        if i < ys0.shape[0]:
+            _perform_extend_area(
+                i, sx, tx, sy, ty, xmin, xmax, ymin, ymax,
+                xmaxi, ymaxi, xs, ys0, ys1, *aggs_and_cols
+            )
+
     @ngjit
     @expand_aggs_and_cols
     def extend_cpu(
@@ -1720,7 +1826,7 @@ def _build_extend_area_to_line_axis1_x_constant(
                 xmaxi, ymaxi, xs, ys0, ys1, *aggs_and_cols
             )
 
-    return extend_cpu
+    return extend_cpu, extend_cuda
 
 
 def _build_extend_area_to_zero_axis1_y_constant(
@@ -1767,6 +1873,22 @@ def _build_extend_area_to_zero_axis1_y_constant(
                 plot_start = False
             j += 1
 
+    @cuda.jit
+    @expand_aggs_and_cols
+    def extend_cuda(
+            sx, tx, sy, ty, xmin, xmax, ymin, ymax, xs, ys, *aggs_and_cols
+    ):
+        xmaxi, ymaxi = map_onto_pixel(
+            sx, tx, sy, ty, xmin, xmax, ymin, ymax, xmax, ymax
+        )
+
+        i = cuda.grid(1)
+        if i < xs.shape[0]:
+            _perform_extend_area(
+                i, sx, tx, sy, ty, xmin, xmax, ymin, ymax,
+                xmaxi, ymaxi, xs, ys, *aggs_and_cols
+            )
+
     @ngjit
     @expand_aggs_and_cols
     def extend_cpu(
@@ -1782,7 +1904,7 @@ def _build_extend_area_to_zero_axis1_y_constant(
                 xmaxi, ymaxi, xs, ys, *aggs_and_cols
             )
 
-    return extend_cpu
+    return extend_cpu, extend_cuda
 
 
 def _build_extend_area_to_line_axis1_y_constant(
@@ -1827,6 +1949,23 @@ def _build_extend_area_to_line_axis1_y_constant(
                 plot_start = False
             j += 1
 
+    @cuda.jit
+    @expand_aggs_and_cols
+    def extend_cuda(
+            sx, tx, sy, ty, xmin, xmax, ymin, ymax,
+            xs, ys0, ys1, *aggs_and_cols
+    ):
+        xmaxi, ymaxi = map_onto_pixel(
+            sx, tx, sy, ty, xmin, xmax, ymin, ymax, xmax, ymax
+        )
+
+        i = cuda.grid(1)
+        if i < xs.shape[0]:
+            _perform_extend_area(
+                i, sx, tx, sy, ty, xmin, xmax, ymin, ymax,
+                xmaxi, ymaxi, xs, ys0, ys1, *aggs_and_cols
+            )
+
     @ngjit
     @expand_aggs_and_cols
     def extend_cpu(
@@ -1843,14 +1982,14 @@ def _build_extend_area_to_line_axis1_y_constant(
                 xmaxi, ymaxi, xs, ys0, ys1, *aggs_and_cols
             )
 
-    return extend_cpu
+    return extend_cpu, extend_cuda
 
 
 def _build_extend_area_to_zero_axis1_ragged(
         draw_trapezoid_y, map_onto_pixel, expand_aggs_and_cols
 ):
 
-    def extend_line(
+    def extend_cpu(
             sx, tx, sy, ty, xmin, xmax, ymin, ymax, xs, ys, *aggs_and_cols
     ):
         x_start_indices = xs.start_indices
@@ -1936,14 +2075,14 @@ def _build_extend_area_to_zero_axis1_ragged(
                 j += 1
             i += 1
 
-    return extend_line
+    return extend_cpu
 
 
 def _build_extend_area_to_line_axis1_ragged(
         draw_trapezoid_y, map_onto_pixel, expand_aggs_and_cols
 ):
 
-    def extend_line(
+    def extend_cpu(
             sx, tx, sy, ty, xmin, xmax, ymin, ymax,
             xs, ys0, ys1, *aggs_and_cols
     ):
@@ -2042,4 +2181,4 @@ def _build_extend_area_to_line_axis1_ragged(
                 j += 1
             i += 1
 
-    return extend_line
+    return extend_cpu

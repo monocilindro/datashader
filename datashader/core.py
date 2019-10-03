@@ -19,6 +19,11 @@ from .utils import Expr # noqa (API import)
 from .resampling import resample_2d, resample_2d_distributed
 from . import reductions as rd
 
+try:
+    import cudf
+except ImportError:
+    cudf = None
+
 
 class Axis(object):
     """Interface for implementing axis transformations.
@@ -286,6 +291,10 @@ class Canvas(object):
         x, y = _broadcast_column_specifications(x, y)
 
         if axis == 0:
+            if cudf and isinstance(source, cudf.DataFrame):
+                raise ValueError("""\
+Canvas.line using a cudf GPU DataFrame is only supported with axis=1""")
+
             if (isinstance(x, (Number, string_types)) and
                     isinstance(y, (Number, string_types))):
                 glyph = LineAxis0(x, y)
@@ -468,6 +477,10 @@ The axis argument to Canvas.line must be 0 or 1
         x, y, y_stack = _broadcast_column_specifications(x, y, y_stack)
 
         if axis == 0:
+            if cudf and isinstance(source, cudf.DataFrame):
+                raise ValueError("""\
+Canvas.area using a cudf GPU DataFrame is only supported with axis=1""")
+
             if y_stack is None:
                 if (isinstance(x, (Number, string_types)) and
                         isinstance(y, (Number, string_types))):
@@ -993,7 +1006,8 @@ def bypixel(source, canvas, glyph, agg):
         source = source.drop([col for col in columns if col not in cols_to_keep])
         source = source.to_dask_dataframe()
 
-    if isinstance(source, pd.DataFrame):
+    if (isinstance(source, pd.DataFrame) or
+            (cudf and isinstance(source, cudf.DataFrame))):
         # Avoid datashape.Categorical instantiation bottleneck
         # by only retaining the necessary columns:
         # https://github.com/bokeh/datashader/issues/396

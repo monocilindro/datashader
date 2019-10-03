@@ -5,6 +5,14 @@ from toolz import memoize
 
 from datashader.glyphs.points import _PointLike
 from datashader.utils import isreal, ngjit
+from numba import cuda
+
+try:
+    import cudf
+    from ..transfer_functions._cuda_utils import cuda_args
+except ImportError:
+    cudf = None
+    cuda_args = None
 
 
 class LineAxis0(_PointLike):
@@ -20,7 +28,7 @@ class LineAxis0(_PointLike):
         expand_aggs_and_cols = self.expand_aggs_and_cols(append)
         draw_line = _build_draw_line(append, expand_aggs_and_cols)
         map_onto_pixel = _build_map_onto_pixel_for_line(x_mapper, y_mapper)
-        perform_extend_cpu = _build_extend_line_axis0(
+        extend_cpu = _build_extend_line_axis0(
             draw_line, map_onto_pixel, expand_aggs_and_cols
         )
         x_name = self.x
@@ -34,7 +42,7 @@ class LineAxis0(_PointLike):
             aggs_and_cols = aggs + info(df)
 
             # line may be clipped, then mapped to pixels
-            perform_extend_cpu(
+            extend_cpu(
                 sx, tx, sy, ty,
                 xmin, xmax, ymin, ymax,
                 xs, ys, plot_start, *aggs_and_cols
@@ -97,7 +105,7 @@ class LineAxis0Multi(_PointLike):
         expand_aggs_and_cols = self.expand_aggs_and_cols(append)
         draw_line = _build_draw_line(append, expand_aggs_and_cols)
         map_onto_pixel = _build_map_onto_pixel_for_line(x_mapper, y_mapper)
-        perform_extend_cpu = _build_extend_line_axis0_multi(
+        extend_cpu = _build_extend_line_axis0_multi(
             draw_line, map_onto_pixel, expand_aggs_and_cols
         )
         x_names = self.x
@@ -112,7 +120,7 @@ class LineAxis0Multi(_PointLike):
 
             aggs_and_cols = aggs + info(df)
             # line may be clipped, then mapped to pixels
-            perform_extend_cpu(
+            extend_cpu(
                 sx, tx, sy, ty,
                 xmin, xmax, ymin, ymax,
                 xs, ys, plot_start, *aggs_and_cols
@@ -197,7 +205,7 @@ class LinesAxis1(_PointLike):
         expand_aggs_and_cols = self.expand_aggs_and_cols(append)
         draw_line = _build_draw_line(append, expand_aggs_and_cols)
         map_onto_pixel = _build_map_onto_pixel_for_line(x_mapper, y_mapper)
-        perform_extend_cpu = _build_extend_line_axis1_none_constant(
+        extend_cpu, extend_cuda = _build_extend_line_axis1_none_constant(
             draw_line, map_onto_pixel, expand_aggs_and_cols
         )
         x_names = self.x
@@ -208,10 +216,17 @@ class LinesAxis1(_PointLike):
             xmin, xmax, ymin, ymax = bounds
             aggs_and_cols = aggs + info(df)
 
-            xs = df[list(x_names)].values
-            ys = df[list(y_names)].values
+            if cudf and isinstance(df, cudf.DataFrame):
+                xs = df[list(x_names)].as_gpu_matrix()
+                ys = df[list(y_names)].as_gpu_matrix()
+                do_extend = extend_cuda[cuda_args(xs.shape[0])]
 
-            perform_extend_cpu(
+            else:
+                xs = df[list(x_names)].values
+                ys = df[list(y_names)].values
+                do_extend = extend_cpu
+
+            do_extend(
                 sx, tx, sy, ty, xmin, xmax, ymin, ymax, xs, ys, *aggs_and_cols
             )
 
@@ -256,7 +271,7 @@ class LinesAxis1XConstant(LinesAxis1):
         expand_aggs_and_cols = self.expand_aggs_and_cols(append)
         draw_line = _build_draw_line(append, expand_aggs_and_cols)
         map_onto_pixel = _build_map_onto_pixel_for_line(x_mapper, y_mapper)
-        perform_extend_cpu = _build_extend_line_axis1_x_constant(
+        extend_cpu, extend_cuda = _build_extend_line_axis1_x_constant(
             draw_line, map_onto_pixel, expand_aggs_and_cols
         )
 
@@ -268,9 +283,14 @@ class LinesAxis1XConstant(LinesAxis1):
             xmin, xmax, ymin, ymax = bounds
             aggs_and_cols = aggs + info(df)
 
-            ys = df[list(y_names)].values
+            if cudf and isinstance(df, cudf.DataFrame):
+                ys = df[list(y_names)].as_gpu_matrix()
+                do_extend = extend_cuda[cuda_args(ys.shape[0])]
+            else:
+                ys = df[list(y_names)].values
+                do_extend = extend_cpu
 
-            perform_extend_cpu(
+            do_extend(
                 sx, tx, sy, ty,
                 xmin, xmax, ymin, ymax,
                 x_values, ys, *aggs_and_cols
@@ -317,7 +337,7 @@ class LinesAxis1YConstant(LinesAxis1):
         expand_aggs_and_cols = self.expand_aggs_and_cols(append)
         draw_line = _build_draw_line(append, expand_aggs_and_cols)
         map_onto_pixel = _build_map_onto_pixel_for_line(x_mapper, y_mapper)
-        perform_extend_cpu = _build_extend_line_axis1_y_constant(
+        extend_cpu, extend_cuda = _build_extend_line_axis1_y_constant(
             draw_line, map_onto_pixel, expand_aggs_and_cols
         )
 
@@ -329,9 +349,14 @@ class LinesAxis1YConstant(LinesAxis1):
             xmin, xmax, ymin, ymax = bounds
             aggs_and_cols = aggs + info(df)
 
-            xs = df[list(x_names)].values
+            if cudf and isinstance(df, cudf.DataFrame):
+                xs = df[list(x_names)].as_gpu_matrix()
+                do_extend = extend_cuda[cuda_args(xs.shape[0])]
+            else:
+                xs = df[list(x_names)].values
+                do_extend = extend_cpu
 
-            perform_extend_cpu(
+            do_extend(
                 sx, tx, sy, ty,
                 xmin, xmax, ymin, ymax,
                 xs, y_values, *aggs_and_cols
@@ -384,7 +409,7 @@ class LinesAxis1Ragged(_PointLike):
         expand_aggs_and_cols = self.expand_aggs_and_cols(append)
         draw_line = _build_draw_line(append, expand_aggs_and_cols)
         map_onto_pixel = _build_map_onto_pixel_for_line(x_mapper, y_mapper)
-        perform_extend_cpu = _build_extend_line_axis1_ragged(
+        extend_cpu = _build_extend_line_axis1_ragged(
             draw_line, map_onto_pixel, expand_aggs_and_cols
         )
         x_name = self.x
@@ -399,7 +424,7 @@ class LinesAxis1Ragged(_PointLike):
 
             aggs_and_cols = aggs + info(df)
             # line may be clipped, then mapped to pixels
-            perform_extend_cpu(
+            extend_cpu(
                 sx, tx, sy, ty,
                 xmin, xmax, ymin, ymax,
                 xs, ys, *aggs_and_cols
@@ -687,18 +712,30 @@ def _build_extend_line_axis1_none_constant(
                 plot_start = False
             j += 1
 
+    @cuda.jit
+    @expand_aggs_and_cols
+    def _extend_cuda(sx, tx, sy, ty, xmin, xmax, ymin, ymax, xs, ys, *aggs_and_cols):
+        i = cuda.grid(1)
+        if i < xs.shape[0]:
+            _perform_extend_line(
+                i, sx, tx, sy, ty, xmin, xmax, ymin, ymax, xs, ys, *aggs_and_cols
+            )
+
     @ngjit
     @expand_aggs_and_cols
-    def extend_cpu(
+    def _extend(
             sx, tx, sy, ty, xmin, xmax, ymin, ymax, xs, ys, *aggs_and_cols
     ):
+        """
+        here xs and ys are tuples of arrays and non-empty
+        """
         for i in range(xs.shape[0]):
             _perform_extend_line(
                 i, sx, tx, sy, ty, xmin, xmax, ymin, ymax,
                 xs, ys, *aggs_and_cols
             )
 
-    return extend_cpu
+    return _extend, _extend_cuda
 
 
 def _build_extend_line_axis1_x_constant(
@@ -734,15 +771,24 @@ def _build_extend_line_axis1_x_constant(
                 plot_start = False
             j += 1
 
+    @cuda.jit
+    @expand_aggs_and_cols
+    def _extend_cuda(sx, tx, sy, ty, xmin, xmax, ymin, ymax, xs, ys, *aggs_and_cols):
+        i = cuda.grid(1)
+        if i < ys.shape[0]:
+            _perform_extend_line(
+                i, sx, tx, sy, ty, xmin, xmax, ymin, ymax, xs, ys, *aggs_and_cols
+            )
+
     @ngjit
     @expand_aggs_and_cols
-    def extend_cpu(sx, tx, sy, ty, xmin, xmax, ymin, ymax, xs, ys, *aggs_and_cols):
+    def _extend(sx, tx, sy, ty, xmin, xmax, ymin, ymax, xs, ys, *aggs_and_cols):
         for i in range(ys.shape[0]):
             _perform_extend_line(
                 i, sx, tx, sy, ty, xmin, xmax, ymin, ymax, xs, ys, *aggs_and_cols
             )
 
-    return extend_cpu
+    return _extend, _extend_cuda
 
 
 def _build_extend_line_axis1_y_constant(
@@ -778,9 +824,22 @@ def _build_extend_line_axis1_y_constant(
                 plot_start = False
             j += 1
 
+    @cuda.jit
+    @expand_aggs_and_cols
+    def _extend_cuda(
+            sx, tx, sy, ty,
+            xmin, xmax, ymin, ymax, xs, ys, *aggs_and_cols
+    ):
+        i = cuda.grid(1)
+        if i < xs.shape[0]:
+            _perform_extend_line(
+                i, sx, tx, sy, ty,
+                xmin, xmax, ymin, ymax, xs, ys, *aggs_and_cols
+            )
+
     @ngjit
     @expand_aggs_and_cols
-    def extend_cpu(
+    def _extend(
             sx, tx, sy, ty,
             xmin, xmax, ymin, ymax, xs, ys, *aggs_and_cols
     ):
@@ -790,7 +849,7 @@ def _build_extend_line_axis1_y_constant(
                 xmin, xmax, ymin, ymax, xs, ys, *aggs_and_cols
             )
 
-    return extend_cpu
+    return _extend, _extend_cuda
 
 
 def _build_extend_line_axis1_ragged(
