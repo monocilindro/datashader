@@ -8,6 +8,7 @@ import datashader as ds
 
 import pytest
 
+from datashader.datatypes import RaggedDtype
 
 df_pd = pd.DataFrame({'x': np.array(([0.] * 10 + [1] * 10)),
                       'y': np.array(([0.] * 5 + [1] * 5 + [0] * 5 + [1] * 5)),
@@ -24,8 +25,20 @@ df_pd.f32[2] = np.nan
 df_pd.f64[2] = np.nan
 dfs_pd = [df_pd]
 
-dfs = [df_pd]
-DataFrames = [pd.DataFrame]
+try:
+    import cudf
+    import cupy
+    def cudf_DataFrame(*args, **kwargs):
+        return cudf.DataFrame.from_pandas(
+            pd.DataFrame(*args, **kwargs), nan_as_null=False
+        )
+    df_cuda = cudf_DataFrame(df_pd)
+    dfs = [df_pd, df_cuda]
+    DataFrames = [pd.DataFrame, cudf_DataFrame]
+except ImportError:
+    cudf = cupy = None
+    dfs = [df_pd]
+    DataFrames = [pd.DataFrame]
 
 c = ds.Canvas(plot_width=2, plot_height=2, x_range=(0, 1), y_range=(0, 1))
 c_logx = ds.Canvas(plot_width=2, plot_height=2, x_range=(1, 10),
@@ -42,14 +55,16 @@ dims = ['y', 'x']
 
 
 def assert_eq_xr(agg, b):
-    """Assert that two xarray DataArrays are equal, handling the possibility
-    that the two DataArrays may be backed by ndarrays of different types"""
+    if cupy and isinstance(agg.data, cupy.ndarray):
+        agg = xr.DataArray(
+            cupy.asnumpy(agg.data), coords=agg.coords, dims=agg.dims
+        )
     assert agg.equals(b)
 
 
 def assert_eq_ndarray(data, b):
-    """Assert that two ndarrays are equal, handling the possibility that the
-    ndarrays are of different types"""
+    if cupy and isinstance(data, cupy.ndarray):
+        data = cupy.asnumpy(data)
     np.testing.assert_equal(data, b)
 
 
@@ -61,9 +76,10 @@ def floats(n):
 
 
 def values(s):
-    """Get numpy array of values from pandas-like Series, handling Series
-    of different types"""
-    return s.values
+    if cudf and isinstance(s, cudf.Series):
+        return s.to_array(fillna=np.nan)
+    else:
+        return s.values
 
 
 @pytest.mark.parametrize('df', dfs)
@@ -685,6 +701,10 @@ def test_bug_570():
     }], 'x', 'y', 1)
 ])
 def test_line_manual_range(DataFrame, df_args, x, y, ax):
+    if cudf and DataFrame is cudf_DataFrame:
+        if isinstance(getattr(df_args[0].get('x', []), 'dtype', ''), RaggedDtype):
+            pytest.skip("cudf DataFrames do not support extension types")
+
     df = DataFrame(*df_args)
 
     axis = ds.core.LinearAxis()
@@ -693,6 +713,12 @@ def test_line_manual_range(DataFrame, df_args, x, y, ax):
 
     cvs = ds.Canvas(plot_width=7, plot_height=7,
                     x_range=(-3, 3), y_range=(-3, 3))
+
+    if cudf and DataFrame is cudf_DataFrame and ax != 1:
+        # axis=0 not supported with cudf DataFrame
+        with pytest.raises(ValueError):
+            cvs.line(df, x, y, ds.count(), axis=ax)
+        return
 
     agg = cvs.line(df, x, y, ds.count(), axis=ax)
 
@@ -757,6 +783,10 @@ def test_line_manual_range(DataFrame, df_args, x, y, ax):
     }], 'x', 'y', 1)
 ])
 def test_line_autorange(DataFrame, df_args, x, y, ax):
+    if cudf and DataFrame is cudf_DataFrame:
+        if isinstance(getattr(df_args[0].get('x', []), 'dtype', ''), RaggedDtype):
+            pytest.skip("cudf DataFrames do not support extension types")
+
     df = DataFrame(*df_args)
 
     axis = ds.core.LinearAxis()
@@ -764,6 +794,12 @@ def test_line_autorange(DataFrame, df_args, x, y, ax):
         axis.compute_scale_and_translate((-4., 4.), 9), 9)
 
     cvs = ds.Canvas(plot_width=9, plot_height=9)
+
+    if cudf and DataFrame is cudf_DataFrame and ax != 1:
+        # axis=0 not supported with cudf DataFrame
+        with pytest.raises(ValueError):
+            cvs.line(df, x, y, ds.count(), axis=ax)
+        return
 
     agg = cvs.line(df, x, y, ds.count(), axis=ax)
 
@@ -922,6 +958,10 @@ def test_line_autorange_axis1_ragged():
     }), 'x', 'y', 1)
 ])
 def test_area_to_zero_fixedrange(DataFrame, df_kwargs, x, y, ax):
+    if cudf and DataFrame is cudf_DataFrame:
+        if isinstance(getattr(df_kwargs['data'].get('x', []), 'dtype', ''), RaggedDtype):
+            pytest.skip("cudf DataFrames do not support extension types")
+
     df = DataFrame(**df_kwargs)
 
     axis = ds.core.LinearAxis()
@@ -933,6 +973,12 @@ def test_area_to_zero_fixedrange(DataFrame, df_kwargs, x, y, ax):
 
     cvs = ds.Canvas(plot_width=9, plot_height=5,
                     x_range=[-3.75, 3.75], y_range=[-2.25, 2.25])
+
+    if cudf and DataFrame is cudf_DataFrame and ax != 1:
+        # axis=0 not supported with cudf DataFrame
+        with pytest.raises(ValueError):
+            cvs.area(df, x, y, ds.count(), axis=ax)
+        return
 
     agg = cvs.area(df, x, y, ds.count(), axis=ax)
 
@@ -996,6 +1042,10 @@ def test_area_to_zero_fixedrange(DataFrame, df_kwargs, x, y, ax):
     }), 'x', 'y', 1)
 ])
 def test_area_to_zero_autorange(DataFrame, df_kwargs, x, y, ax):
+    if cudf and DataFrame is cudf_DataFrame:
+        if isinstance(getattr(df_kwargs['data'].get('x', []), 'dtype', ''), RaggedDtype):
+            pytest.skip("cudf DataFrames do not support extension types")
+
     df = DataFrame(**df_kwargs)
 
     axis = ds.core.LinearAxis()
@@ -1005,6 +1055,12 @@ def test_area_to_zero_autorange(DataFrame, df_kwargs, x, y, ax):
         axis.compute_scale_and_translate((-4., 4.), 13), 13)
 
     cvs = ds.Canvas(plot_width=13, plot_height=7)
+
+    if cudf and DataFrame is cudf_DataFrame and ax != 1:
+        # axis=0 not supported with cudf DataFrame
+        with pytest.raises(ValueError):
+            cvs.area(df, x, y, ds.count(), axis=ax)
+        return
 
     agg = cvs.area(df, x, y, ds.count(), axis=ax)
 
@@ -1057,6 +1113,10 @@ def test_area_to_zero_autorange(DataFrame, df_kwargs, x, y, ax):
     }), 'x', 'y', 1)
 ])
 def test_area_to_zero_autorange_gap(DataFrame, df_kwargs, x, y, ax):
+    if cudf and DataFrame is cudf_DataFrame:
+        if isinstance(getattr(df_kwargs['data'].get('x', []), 'dtype', ''), RaggedDtype):
+            pytest.skip("cudf DataFrames do not support extension types")
+
     df = DataFrame(**df_kwargs)
 
     axis = ds.core.LinearAxis()
@@ -1067,6 +1127,11 @@ def test_area_to_zero_autorange_gap(DataFrame, df_kwargs, x, y, ax):
 
     cvs = ds.Canvas(plot_width=13, plot_height=7)
 
+    if cudf and DataFrame is cudf_DataFrame and ax != 1:
+        # axis=0 not supported with cudf DataFrame
+        with pytest.raises(ValueError):
+            cvs.area(df, x, y, ds.count(), axis=ax)
+        return
     agg = cvs.area(df, x, y, ds.count(), axis=ax)
 
     sol = np.array([[0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0],
@@ -1142,6 +1207,10 @@ def test_area_to_zero_autorange_gap(DataFrame, df_kwargs, x, y, ax):
     }), 'x', 'y', 'y_stack', 1)
 ])
 def test_area_to_line_autorange(DataFrame, df_kwargs, x, y, y_stack, ax):
+    if cudf and DataFrame is cudf_DataFrame:
+        if isinstance(getattr(df_kwargs['data'].get('x', []), 'dtype', ''), RaggedDtype):
+            pytest.skip("cudf DataFrames do not support extension types")
+
     df = DataFrame(**df_kwargs)
 
     axis = ds.core.LinearAxis()
@@ -1151,6 +1220,12 @@ def test_area_to_line_autorange(DataFrame, df_kwargs, x, y, y_stack, ax):
         axis.compute_scale_and_translate((-4., 4.), 13), 13)
 
     cvs = ds.Canvas(plot_width=13, plot_height=7)
+
+    if cudf and DataFrame is cudf_DataFrame and ax != 1:
+        # axis=0 not supported with cudf DataFrame
+        with pytest.raises(ValueError):
+            cvs.area(df, x, y, ds.count(), axis=ax, y_stack=y_stack)
+        return
 
     agg = cvs.area(df, x, y, ds.count(), axis=ax, y_stack=y_stack)
 
