@@ -34,6 +34,9 @@ def cuda_args(shape):
         shape = (shape,)
 
     max_threads = cuda.get_current_device().MAX_THREADS_PER_BLOCK
+    # Note: We divide max_threads by 2.0 to leave room for the registers
+    # occupied by the kernel. For some discussion, see
+    # https://github.com/numba/numba/issues/3798.
     threads_per_block = int(ceil(max_threads / 2.0) ** (1.0 / len(shape)))
     tpb = (threads_per_block,) * len(shape)
     bpg = tuple(int(ceil(d / threads_per_block)) for d in shape)
