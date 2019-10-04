@@ -44,6 +44,7 @@ def default(glyph, source, schema, canvas, summary, cuda=False):
     extend(bases, source, x_st + y_st, x_range + y_range)
 
     return finalize(bases,
+                    cuda=cuda,
                     coords=OrderedDict([(glyph.x_label, x_axis),
                                         (glyph.y_label, y_axis)]),
                     dims=[glyph.y_label, glyph.x_label])

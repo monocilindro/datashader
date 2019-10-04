@@ -51,7 +51,7 @@ def compile_components(agg, schema, glyph, cuda=False):
     reds = list(traverse_aggregation(agg))
 
     # List of base reductions (actually computed)
-    bases = list(unique(concat(r._build_bases() for r in reds)))
+    bases = list(unique(concat(r._build_bases(cuda) for r in reds)))
     dshapes = [b.out_dshape(schema) for b in bases]
     # List of tuples of (append, base, input columns, temps)
     calls = [_get_call_tuples(b, d, schema, cuda) for (b, d) in zip(bases, dshapes)]
@@ -64,7 +64,7 @@ def compile_components(agg, schema, glyph, cuda=False):
     info = make_info(cols)
     append = make_append(bases, cols, calls, glyph)
     combine = make_combine(bases, dshapes, temps)
-    finalize = make_finalize(bases, agg, schema)
+    finalize = make_finalize(bases, agg, schema, cuda)
 
     return create, info, append, combine, finalize
 
@@ -80,7 +80,8 @@ def traverse_aggregation(agg):
 
 
 def _get_call_tuples(base, dshape, schema, cuda):
-    return base._build_append(dshape, schema, cuda), (base,), base.inputs, base._build_temps()
+    return (base._build_append(dshape, schema, cuda),
+            (base,), base.inputs, base._build_temps(cuda))
 
 
 def make_create(bases, dshapes, cuda):
@@ -150,22 +151,22 @@ def make_combine(bases, dshapes, temps):
     return combine
 
 
-def make_finalize(bases, agg, schema):
+def make_finalize(bases, agg, schema, cuda):
     arg_lk = dict((k, v) for (v, k) in enumerate(bases))
     if isinstance(agg, summary):
         calls = []
         for key, val in zip(agg.keys, agg.values):
-            f = make_finalize(bases, val, schema)
+            f = make_finalize(bases, val, schema, cuda)
             try:
                 # Override bases if possible
-                bases = val._build_bases()
+                bases = val._build_bases(cuda)
             except AttributeError:
                 pass
             inds = [arg_lk[b] for b in bases]
             calls.append((key, f, inds))
 
-        def finalize(bases, **kwargs):
-            data = {key: finalizer(get(inds, bases), **kwargs)
+        def finalize(bases, cuda=False, **kwargs):
+            data = {key: finalizer(get(inds, bases), cuda, **kwargs)
                     for (key, finalizer, inds) in calls}
             return xr.Dataset(data)
         return finalize

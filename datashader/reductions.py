@@ -67,16 +67,16 @@ class Reduction(Expr):
     def inputs(self):
         return (extract(self.column),)
 
-    def _build_bases(self):
+    def _build_bases(self, cuda=False):
         return (self,)
 
-    def _build_temps(self):
+    def _build_temps(self, cuda=False):
         return ()
 
     def _build_create(self, dshape):
         return self._create
 
-    def _build_append(self, dshape, schema, cuda):
+    def _build_append(self, dshape, schema, cuda=False):
         if cuda:
             if self.column is None:
                 return self._append_no_field_cuda
@@ -112,7 +112,7 @@ class OptionalFieldReduction(Reduction):
         pass
 
     @staticmethod
-    def _finalize(bases, **kwargs):
+    def _finalize(bases, cuda=False, **kwargs):
         return xr.DataArray(bases[0], **kwargs)
 
 
@@ -217,7 +217,7 @@ class FloatingReduction(Reduction):
         return array_module.full(shape, np.nan, dtype='f8')
 
     @staticmethod
-    def _finalize(bases, **kwargs):
+    def _finalize(bases, cuda=False, **kwargs):
         return xr.DataArray(bases[0], **kwargs)
 
 
@@ -272,12 +272,11 @@ class sum(FloatingReduction):
     """
     _dshape = dshape(Option(ct.float64))
 
-    @property
-    def _bases(self):
+    def _build_bases(self, cuda=False):
         return (_sum_zero(self.column), any(self.column))
 
     @staticmethod
-    def _finalize(bases, **kwargs):
+    def _finalize(bases, cuda=False, **kwargs):
         sums, anys = bases
         x = np.where(anys, sums, np.nan)
         return xr.DataArray(x, **kwargs)
@@ -299,10 +298,10 @@ class m2(FloatingReduction):
     def _create(shape, array_module):
         return array_module.full(shape, 0.0, dtype='f8')
 
-    def _build_temps(self):
+    def _build_temps(self, cuda=False):
         return (_sum_zero(self.column), count(self.column))
 
-    def _build_append(self, dshape, schema, cuda):
+    def _build_append(self, dshape, schema, cuda=False):
         if cuda:
             raise ValueError("""\
 The 'std' and 'var' reduction operations are not yet supported on the GPU""")
@@ -441,7 +440,7 @@ class count_cat(Reduction):
     def _build_finalize(self, dshape):
         cats = list(dshape[self.column].categories)
 
-        def finalize(bases, **kwargs):
+        def finalize(bases, cuda=False, **kwargs):
             dims = kwargs['dims'] + [self.column]
 
             coords = kwargs['coords']
@@ -461,11 +460,11 @@ class mean(Reduction):
     """
     _dshape = dshape(Option(ct.float64))
 
-    def _build_bases(self):
+    def _build_bases(self, cuda=False):
         return (_sum_zero(self.column), count(self.column))
 
     @staticmethod
-    def _finalize(bases, **kwargs):
+    def _finalize(bases, cuda=False, **kwargs):
         sums, counts = bases
         with np.errstate(divide='ignore', invalid='ignore'):
             x = np.where(counts > 0, sums/counts, np.nan)
@@ -483,11 +482,11 @@ class var(Reduction):
     """
     _dshape = dshape(Option(ct.float64))
 
-    def _build_bases(self):
+    def _build_bases(self, cuda=False):
         return (_sum_zero(self.column), count(self.column), m2(self.column))
 
     @staticmethod
-    def _finalize(bases, **kwargs):
+    def _finalize(bases, cuda=False, **kwargs):
         sums, counts, m2s = bases
         with np.errstate(divide='ignore', invalid='ignore'):
             x = np.where(counts > 0, m2s / counts, np.nan)
@@ -505,11 +504,11 @@ class std(Reduction):
     """
     _dshape = dshape(Option(ct.float64))
 
-    def _build_bases(self):
+    def _build_bases(self, cuda=False):
         return (_sum_zero(self.column), count(self.column), m2(self.column))
 
     @staticmethod
-    def _finalize(bases, **kwargs):
+    def _finalize(bases, cuda=False, **kwargs):
         sums, counts, m2s = bases
         with np.errstate(divide='ignore', invalid='ignore'):
             x = np.where(counts > 0, np.sqrt(m2s / counts), np.nan)
