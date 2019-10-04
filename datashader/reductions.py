@@ -67,12 +67,10 @@ class Reduction(Expr):
     def inputs(self):
         return (extract(self.column),)
 
-    @property
-    def _bases(self):
+    def _build_bases(self):
         return (self,)
 
-    @property
-    def _temps(self):
+    def _build_temps(self):
         return ()
 
     def _build_create(self, dshape):
@@ -301,8 +299,7 @@ class m2(FloatingReduction):
     def _create(shape, array_module):
         return array_module.full(shape, 0.0, dtype='f8')
 
-    @property
-    def _temps(self):
+    def _build_temps(self):
         return (_sum_zero(self.column), count(self.column))
 
     def _build_append(self, dshape, schema, cuda):
@@ -464,8 +461,7 @@ class mean(Reduction):
     """
     _dshape = dshape(Option(ct.float64))
 
-    @property
-    def _bases(self):
+    def _build_bases(self):
         return (_sum_zero(self.column), count(self.column))
 
     @staticmethod
@@ -487,8 +483,7 @@ class var(Reduction):
     """
     _dshape = dshape(Option(ct.float64))
 
-    @property
-    def _bases(self):
+    def _build_bases(self):
         return (_sum_zero(self.column), count(self.column), m2(self.column))
 
     @staticmethod
@@ -510,8 +505,7 @@ class std(Reduction):
     """
     _dshape = dshape(Option(ct.float64))
 
-    @property
-    def _bases(self):
+    def _build_bases(self):
         return (_sum_zero(self.column), count(self.column), m2(self.column))
 
     @staticmethod
