@@ -272,14 +272,47 @@ class sum(FloatingReduction):
     """
     _dshape = dshape(Option(ct.float64))
 
+    # Cuda implementation
     def _build_bases(self, cuda=False):
-        return (_sum_zero(self.column), any(self.column))
+        if cuda:
+            return (_sum_zero(self.column), any(self.column))
+        else:
+            return (self,)
 
     @staticmethod
     def _finalize(bases, cuda=False, **kwargs):
-        sums, anys = bases
-        x = np.where(anys, sums, np.nan)
-        return xr.DataArray(x, **kwargs)
+        if cuda:
+            sums, anys = bases
+            x = np.where(anys, sums, np.nan)
+            return xr.DataArray(x, **kwargs)
+        else:
+            return xr.DataArray(bases[0], **kwargs)
+
+    # Single pass CPU implementation
+    # These methods will only be called if _build_bases returned (self,)
+    @staticmethod
+    @ngjit
+    def _append_int_field(x, y, agg, field):
+        if np.isnan(agg[y, x]):
+            agg[y, x] = field
+        else:
+            agg[y, x] += field
+
+    @staticmethod
+    @ngjit
+    def _append_float_field(x, y, agg, field):
+        if not np.isnan(field):
+            if np.isnan(agg[y, x]):
+                agg[y, x] = field
+            else:
+                agg[y, x] += field
+
+    @staticmethod
+    def _combine(aggs):
+        missing_vals = np.isnan(aggs)
+        all_empty = np.bitwise_and.reduce(missing_vals, axis=0)
+        set_to_zero = missing_vals & ~all_empty
+        return np.where(set_to_zero, 0, aggs).sum(axis=0)
 
 class m2(FloatingReduction):
     """Sum of square differences from the mean of all elements in ``column``.
