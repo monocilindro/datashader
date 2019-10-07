@@ -24,6 +24,10 @@ try:
 except ImportError:
     cudf = None
 
+try:
+    import dask_cudf
+except ImportError:
+    dask_cudf = None
 
 class Axis(object):
     """Interface for implementing axis transformations.
@@ -291,7 +295,8 @@ class Canvas(object):
         x, y = _broadcast_column_specifications(x, y)
 
         if axis == 0:
-            if cudf and isinstance(source, cudf.DataFrame):
+            if (cudf and isinstance(source, cudf.DataFrame) or
+                    dask_cudf and isinstance(source, dask_cudf.DataFrame)):
                 raise ValueError("""\
 Canvas.line using a cudf GPU DataFrame is only supported with axis=1""")
 
