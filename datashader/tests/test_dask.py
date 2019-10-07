@@ -160,7 +160,7 @@ def test_mean(ddf):
 
 @pytest.mark.parametrize('ddf', ddfs)
 def test_var(ddf):
-    if isinstance(ddf, dask_cudf.DataFrame):
+    if dask_cudf and isinstance(ddf, dask_cudf.DataFrame):
         pytest.skip("var not supported with cudf")
 
     out = xr.DataArray(
@@ -177,7 +177,7 @@ def test_var(ddf):
 
 @pytest.mark.parametrize('ddf', ddfs)
 def test_std(ddf):
-    if isinstance(ddf, dask_cudf.DataFrame):
+    if dask_cudf and isinstance(ddf, dask_cudf.DataFrame):
         pytest.skip("std not supported with cudf")
 
     out = xr.DataArray(
