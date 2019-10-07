@@ -12,7 +12,7 @@ try:
     from . import cudf    # noqa (API import)
 
     import dask_cudf as _dask_cudf  # noqa (Test dask_cudf installed)
-    from . import dask_cudf         # (API import)
+    from . import dask_cudf         # noqa (API import)
 
 except ImportError:
     pass
